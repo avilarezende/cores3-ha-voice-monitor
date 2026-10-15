@@ -1,0 +1,138 @@
+# Monitor de sons perigosos (CoreS3 -> sound-monitor -> Home Assistant).
+# Requer em configuration.yaml:
+#   homeassistant:
+#     packages: !include_dir_named packages
+
+automation:
+  - id: monitor_perigo_webhook
+    alias: "Monitor de perigo: receber evento"
+    mode: queued
+    triggers:
+      - trigger: webhook
+        # Deve ser igual a HA_WEBHOOK_ID no .env do sound-monitor.
+        webhook_id: monitor_perigo_troque_este_id
+        allowed_methods: [POST]
+        local_only: true
+    actions:
+      - event: monitor_perigo
+        event_data:
+          category: "{{ trigger.json.category }}"
+          label: "{{ trigger.json.label }}"
+          score: "{{ trigger.json.score }}"
+          device: "{{ trigger.json.device }}"
+          clip: "{{ trigger.json.clip | default('') }}"
+
+  - id: monitor_perigo_reagir
+    alias: "Monitor de perigo: reagir"
+    mode: queued
+    max: 5
+    triggers:
+      - trigger: event
+        event_type: monitor_perigo
+    variables:
+      # Troque pela entidade assist_satellite do seu CoreS3 (Configurações > Dispositivos > CoreS3 Assist).
+      satellite: assist_satellite.cores3_assist_assist_satellite
+      category: "{{ trigger.event.data.category }}"
+      descriptions:
+        grito: "um grito"
+        latido: "latidos"
+        campainha: "a campainha"
+        alarme_incendio: "um alarme de incêndio"
+        explosao: "um estrondo ou explosão"
+      description: "{{ descriptions.get(category, category) }}"
+    actions:
+      - action: persistent_notification.create
+        data:
+          notification_id: "monitor_perigo_{{ category }}"
+          title: "Monitor de perigo"
+          message: >-
+            Detectei {{ description }} às {{ now().strftime('%H:%M:%S') }}
+            ({{ trigger.event.data.label }}, confiança {{ trigger.event.data.score }}).
+      - choose:
+          - conditions: "{{ category in ['grito', 'alarme_incendio', 'explosao'] }}"
+            sequence:
+              - action: assist_satellite.start_conversation
+                continue_on_error: true
+                target:
+                  entity_id: "{{ satellite }}"
+                data:
+                  start_message: "Atenção: detectei {{ description }}. Está tudo bem?"
+          - conditions: "{{ category == 'campainha' }}"
+            sequence:
+              - action: assist_satellite.announce
+                continue_on_error: true
+                target:
+                  entity_id: "{{ satellite }}"
+                data:
+                  message: "A campainha tocou."
+
+template:
+  - triggers:
+      - trigger: event
+        event_type: monitor_perigo
+    sensor:
+      - name: "Último perigo detectado"
+        unique_id: monitor_perigo_ultimo
+        icon: mdi:alert-octagon
+        state: "{{ trigger.event.data.category }}"
+        attributes:
+          label: "{{ trigger.event.data.label }}"
+          score: "{{ trigger.event.data.score }}"
+          device: "{{ trigger.event.data.device }}"
+          clip: "{{ trigger.event.data.clip }}"
+          detected_at: "{{ now().isoformat() }}"
+
+  - triggers:
+      - trigger: event
+        event_type: monitor_perigo
+        event_data: { category: grito }
+    binary_sensor:
+      - name: "Perigo: grito"
+        unique_id: monitor_perigo_grito
+        device_class: safety
+        state: "true"
+        auto_off: 60
+
+  - triggers:
+      - trigger: event
+        event_type: monitor_perigo
+        event_data: { category: latido }
+    binary_sensor:
+      - name: "Perigo: latido"
+        unique_id: monitor_perigo_latido
+        device_class: sound
+        state: "true"
+        auto_off: 60
+
+  - triggers:
+      - trigger: event
+        event_type: monitor_perigo
+        event_data: { category: campainha }
+    binary_sensor:
+      - name: "Perigo: campainha"
+        unique_id: monitor_perigo_campainha
+        device_class: sound
+        state: "true"
+        auto_off: 30
+
+  - triggers:
+      - trigger: event
+        event_type: monitor_perigo
+        event_data: { category: alarme_incendio }
+    binary_sensor:
+      - name: "Perigo: alarme de incêndio"
+        unique_id: monitor_perigo_alarme_incendio
+        device_class: smoke
+        state: "true"
+        auto_off: 300
+
+  - triggers:
+      - trigger: event
+        event_type: monitor_perigo
+        event_data: { category: explosao }
+    binary_sensor:
+      - name: "Perigo: explosão"
+        unique_id: monitor_perigo_explosao
+        device_class: safety
+        state: "true"
+        auto_off: 120

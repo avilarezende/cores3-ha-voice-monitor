@@ -1,0 +1,6 @@
+esphome/secrets.yaml
+esphome/.esphome/
+.esphome/
+.env
+sound-monitor/clips/
+__pycache__/

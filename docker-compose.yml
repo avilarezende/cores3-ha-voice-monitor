@@ -1,0 +1,13 @@
+services:
+  sound-monitor:
+    build: ./sound-monitor
+    restart: unless-stopped
+    ports:
+      - "5050:5050/udp"
+    environment:
+      HA_URL: ${HA_URL:?defina HA_URL no .env}
+      HA_WEBHOOK_ID: ${HA_WEBHOOK_ID:?defina HA_WEBHOOK_ID no .env}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    volumes:
+      - ./sound-monitor/config.toml:/app/config.toml:ro
+      - ./sound-monitor/clips:/data/clips

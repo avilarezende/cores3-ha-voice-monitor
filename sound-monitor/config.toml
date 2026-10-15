@@ -1,0 +1,46 @@
+# Parâmetros do detector. Rótulos são nomes exatos de classes do AudioSet/YAMNet
+# (model/yamnet_class_map.csv). Pontuações do YAMNet são sigmoides independentes por classe (0..1).
+#
+# threshold         pontuação mínima numa janela para contar como "acerto"
+# window / min_hits votação: dispara se houver min_hits acertos nas últimas `window` janelas
+# cooldown_seconds  intervalo mínimo entre dois eventos da mesma categoria
+
+hop_seconds = 0.5      # uma inferência a cada 0,5 s (janelas de 0,975 s com sobreposição)
+clip_seconds = 4.0     # duração do WAV salvo em CLIPS_DIR para cada evento
+min_rms_dbfs = -65.0   # janelas mais silenciosas que isso não passam pelo modelo
+
+[categories.grito]
+labels = ["Screaming", "Yell"]
+threshold = 0.35
+window = 3
+min_hits = 2
+cooldown_seconds = 30
+
+[categories.latido]
+labels = ["Bark", "Bow-wow", "Yip"]
+threshold = 0.40
+window = 4
+min_hits = 2
+cooldown_seconds = 120
+
+[categories.campainha]
+labels = ["Doorbell", "Ding-dong"]
+threshold = 0.30
+window = 2
+min_hits = 1
+cooldown_seconds = 20
+
+[categories.alarme_incendio]
+labels = ["Smoke detector, smoke alarm", "Fire alarm"]
+threshold = 0.30
+window = 4
+min_hits = 2
+cooldown_seconds = 60
+
+# Explosões são transientes curtos: uma única janela já basta.
+[categories.explosao]
+labels = ["Explosion", "Boom", "Gunshot, gunfire"]
+threshold = 0.40
+window = 1
+min_hits = 1
+cooldown_seconds = 30

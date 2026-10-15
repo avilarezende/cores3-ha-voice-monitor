@@ -1,0 +1,91 @@
+substitutions:
+  name: cores3-assist
+  friendly_name: CoreS3 Assist
+  # IPv4 of the machine running sound-monitor (docker compose); hostnames are not resolved.
+  sound_monitor_host: 192.168.1.100
+  sound_monitor_port: "5050"
+
+packages:
+  m5stack_cores3:
+    url: https://github.com/m5stack/esphome-yaml
+    files: [common/cores3-satellite-base.yaml]
+    ref: 41c2c9505c337a442b30260107f6e74f3d9c541d
+    refresh: 1d
+
+external_components:
+  - source:
+      type: local
+      path: components
+    components: [audio_udp_stream]
+
+api:
+  encryption:
+    key: !secret api_encryption_key
+
+ota:
+  - id: !extend ota_esphome
+    password: !secret ota_password
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  ap:
+    ssid: "CoreS3 Assist Fallback"
+    password: !secret fallback_ap_password
+
+select:
+  # restore_value: false so a stale "On device" left in NVS can't override continuous streaming after reflash.
+  - id: !extend wake_word_engine_location
+    initial_option: In Home Assistant
+    restore_value: false
+
+audio_udp_stream:
+  id: sound_stream
+  microphone: i2s_mic
+  host: ${sound_monitor_host}
+  port: ${sound_monitor_port}
+
+voice_assistant:
+  on_stt_end:
+    - text_sensor.template.publish:
+        id: last_transcript
+        state: !lambda return utf8_truncate(x, 250);
+  on_tts_start:
+    - text_sensor.template.publish:
+        id: last_response
+        state: !lambda return utf8_truncate(x, 250);
+
+esphome:
+  includes:
+    - utf8_truncate.h
+
+switch:
+  - platform: template
+    id: sound_monitor_switch
+    name: "Monitor de sons perigosos"
+    icon: "mdi:ear-hearing"
+    entity_category: config
+    restore_mode: RESTORE_DEFAULT_ON
+    lambda: return id(sound_stream).is_enabled();
+    turn_on_action:
+      - lambda: id(sound_stream).set_enabled(true);
+    turn_off_action:
+      - lambda: id(sound_stream).set_enabled(false);
+
+binary_sensor:
+  - platform: template
+    name: "Monitor de sons transmitindo"
+    icon: "mdi:waveform"
+    entity_category: diagnostic
+    lambda: return id(sound_stream).is_streaming();
+
+text_sensor:
+  # Home Assistant rejects states longer than 255 characters.
+  - platform: template
+    id: last_transcript
+    name: "Última transcrição"
+    icon: "mdi:text-recognition"
+  - platform: template
+    id: last_response
+    name: "Última resposta"
+    icon: "mdi:message-reply-text"
