@@ -1,0 +1,21 @@
+# Só é necessário quando o sound-monitor roda fora do HA OS (docker compose).
+# Como app do HA OS, ele dispara o evento monitor_perigo diretamente; não copie este arquivo.
+
+automation:
+  - id: monitor_perigo_webhook
+    alias: "Monitor de perigo: receber webhook"
+    mode: queued
+    triggers:
+      - trigger: webhook
+        # Deve ser igual a HA_WEBHOOK_ID no .env do sound-monitor.
+        webhook_id: monitor_perigo_troque_este_id
+        allowed_methods: [POST]
+        local_only: true
+    actions:
+      - event: monitor_perigo
+        event_data:
+          category: "{{ trigger.json.category }}"
+          label: "{{ trigger.json.label }}"
+          score: "{{ trigger.json.score }}"
+          device: "{{ trigger.json.device }}"
+          clip: "{{ trigger.json.clip | default('') }}"

@@ -1,0 +1,31 @@
+name: Sound Monitor
+version: "0.1.0"
+slug: sound_monitor
+description: >-
+  Detecta gritos, latidos, campainhas, alarmes de incêndio e explosões no áudio
+  enviado pelo CoreS3 (YAMNet) e dispara o evento monitor_perigo no Home Assistant.
+url: https://github.com/avilarezende/cores3-ha-voice-monitor
+arch:
+  - amd64
+  - aarch64
+startup: application
+boot: auto
+homeassistant_api: true
+ports:
+  5050/udp: 5050
+ports_description:
+  5050/udp: "Áudio PCM do CoreS3 (16 kHz, 16 bit, mono)"
+map:
+  - type: app_config
+    read_only: false
+  - type: media
+    read_only: false
+environment:
+  CONFIG_PATH: /config/config.toml
+  CLIPS_DIR: /media/sound-monitor
+options:
+  log_level: INFO
+  max_clips: 200
+schema:
+  log_level: list(DEBUG|INFO|WARNING|ERROR)
+  max_clips: int(1,5000)

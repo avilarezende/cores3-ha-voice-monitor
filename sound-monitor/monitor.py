@@ -14,6 +14,7 @@ import csv
 import json
 import logging
 import os
+import shutil
 import socket
 import time
 import tomllib
@@ -31,6 +32,9 @@ from ai_edge_litert.interpreter import Interpreter
 SAMPLE_RATE = 16000
 WINDOW_SAMPLES = 15600  # entrada fixa do YAMNet: 0,975 s
 PACKET_SAMPLES = 512  # mesmo tamanho de datagrama que o firmware envia
+EVENT_TYPE = "monitor_perigo"
+APP_OPTIONS_PATH = Path("/data/options.json")
+BUNDLED_CONFIG_PATH = Path(__file__).with_name("config.toml")
 
 log = logging.getLogger("sound-monitor")
 
@@ -174,14 +178,30 @@ class DeviceStream:
 
 
 class Notifier:
-    def __init__(self, ha_url: str | None, webhook_id: str | None, clips_dir: Path | None):
-        self.webhook_url = f"{ha_url.rstrip('/')}/api/webhook/{webhook_id}" if ha_url and webhook_id else None
+    """Entrega eventos ao Home Assistant e guarda o clipe de áudio de cada um.
+
+    Rodando como app do HA OS, dispara o evento `monitor_perigo` pela API interna do Supervisor.
+    Fora dele, chama o webhook configurado em HA_URL/HA_WEBHOOK_ID.
+    """
+
+    def __init__(self, clips_dir: Path | None, max_clips: int):
         self.clips_dir = clips_dir
+        self.max_clips = max_clips
         if clips_dir:
             clips_dir.mkdir(parents=True, exist_ok=True)
         self.executor = ThreadPoolExecutor(max_workers=2)
-        if not self.webhook_url:
-            log.warning("HA_URL/HA_WEBHOOK_ID não definidos: eventos só serão registrados no log")
+
+        self.headers = {"Content-Type": "application/json"}
+        if token := os.environ.get("SUPERVISOR_TOKEN"):
+            self.url = f"http://supervisor/core/api/events/{EVENT_TYPE}"
+            self.headers["Authorization"] = f"Bearer {token}"
+            log.info("Eventos serão disparados como '%s' pela API do Supervisor", EVENT_TYPE)
+        elif (ha_url := os.environ.get("HA_URL")) and (webhook_id := os.environ.get("HA_WEBHOOK_ID")):
+            self.url = f"{ha_url.rstrip('/')}/api/webhook/{webhook_id}"
+            log.info("Eventos serão enviados ao webhook do Home Assistant em %s", ha_url)
+        else:
+            self.url = None
+            log.warning("Sem SUPERVISOR_TOKEN nem HA_URL/HA_WEBHOOK_ID: eventos só serão registrados no log")
 
     def submit(self, event: dict, clip: np.ndarray) -> None:
         self.executor.submit(self._handle, event, clip.copy())
@@ -192,19 +212,21 @@ class Notifier:
             path = self.clips_dir / f"{stamp}_{event['category']}_{event['score']:.2f}.wav"
             write_wav(path, clip)
             event["clip"] = path.name
-        if not self.webhook_url:
+            self._prune_clips()
+        if not self.url:
             return
-        request = urllib.request.Request(
-            self.webhook_url,
-            data=json.dumps(event).encode(),
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
+        request = urllib.request.Request(self.url, data=json.dumps(event).encode(), headers=self.headers, method="POST")
         try:
             with urllib.request.urlopen(request, timeout=5) as response:
-                log.debug("Webhook respondeu %s", response.status)
+                log.debug("Home Assistant respondeu %s", response.status)
         except (urllib.error.URLError, TimeoutError) as err:
-            log.error("Falha ao chamar o webhook do Home Assistant: %s", err)
+            log.error("Falha ao avisar o Home Assistant: %s", err)
+
+    def _prune_clips(self) -> None:
+        # Nomes começam com data/hora, então a ordem alfabética é a cronológica.
+        clips = sorted(self.clips_dir.glob("*.wav"))
+        for old in clips[: max(0, len(clips) - self.max_clips)]:
+            old.unlink(missing_ok=True)
 
 
 def write_wav(path: Path, samples: np.ndarray) -> None:
@@ -231,9 +253,8 @@ def read_wav(path: Path) -> np.ndarray:
 
 def serve(args, model: YamNet, settings: Settings) -> None:
     notifier = Notifier(
-        os.environ.get("HA_URL"),
-        os.environ.get("HA_WEBHOOK_ID"),
         Path(os.environ["CLIPS_DIR"]) if os.environ.get("CLIPS_DIR") else None,
+        int(os.environ.get("MAX_CLIPS", "200")),
     )
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1 << 20)
@@ -306,7 +327,25 @@ def send(args) -> None:
     print(f"Enviados {len(samples) / SAMPLE_RATE:.1f} s de áudio para {args.host}:{args.port}")
 
 
+def apply_app_options() -> None:
+    """No HA OS, as opções da aba Configuração do app chegam em /data/options.json."""
+    if not APP_OPTIONS_PATH.exists():
+        return
+    options = json.loads(APP_OPTIONS_PATH.read_text(encoding="utf-8"))
+    os.environ["LOG_LEVEL"] = options.get("log_level", "INFO")
+    os.environ["MAX_CLIPS"] = str(options.get("max_clips", 200))
+
+
+def ensure_config(path: Path) -> None:
+    """Na primeira execução, copia os parâmetros padrão para onde o usuário pode editá-los."""
+    if not path.exists() and path.resolve() != BUNDLED_CONFIG_PATH.resolve():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(BUNDLED_CONFIG_PATH, path)
+        log.info("Parâmetros padrão copiados para %s", path)
+
+
 def main() -> None:
+    apply_app_options()
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--model", default=os.environ.get("MODEL_PATH", "model/yamnet.tflite"))
     parser.add_argument("--class-map", default=os.environ.get("CLASS_MAP_PATH", "model/yamnet_class_map.csv"))
@@ -330,6 +369,7 @@ def main() -> None:
     if args.mode == "send":
         send(args)
         return
+    ensure_config(Path(args.config))
     model = YamNet(Path(args.model), Path(args.class_map))
     settings = load_settings(Path(args.config), model.class_names)
     if args.mode == "serve":

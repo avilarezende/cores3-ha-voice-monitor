@@ -1,27 +1,11 @@
 # Monitor de sons perigosos (CoreS3 -> sound-monitor -> Home Assistant).
+# Reage ao evento monitor_perigo, disparado pelo app Sound Monitor no HA OS
+# (ou pelo webhook de monitor_perigo_webhook.yaml no modo Docker avulso).
 # Requer em configuration.yaml:
 #   homeassistant:
 #     packages: !include_dir_named packages
 
 automation:
-  - id: monitor_perigo_webhook
-    alias: "Monitor de perigo: receber evento"
-    mode: queued
-    triggers:
-      - trigger: webhook
-        # Deve ser igual a HA_WEBHOOK_ID no .env do sound-monitor.
-        webhook_id: monitor_perigo_troque_este_id
-        allowed_methods: [POST]
-        local_only: true
-    actions:
-      - event: monitor_perigo
-        event_data:
-          category: "{{ trigger.json.category }}"
-          label: "{{ trigger.json.label }}"
-          score: "{{ trigger.json.score }}"
-          device: "{{ trigger.json.device }}"
-          clip: "{{ trigger.json.clip | default('') }}"
-
   - id: monitor_perigo_reagir
     alias: "Monitor de perigo: reagir"
     mode: queued

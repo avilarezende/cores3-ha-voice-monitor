@@ -1,0 +1,9 @@
+configuration:
+  log_level:
+    name: Nível de log
+    description: DEBUG registra as 3 classes mais prováveis do YAMNet em cada janela analisada (útil para ajustar limiares).
+  max_clips:
+    name: Máximo de clipes
+    description: Quantidade de clipes WAV de eventos mantidos em /media/sound-monitor; os mais antigos são apagados.
+network:
+  5050/udp: Áudio PCM do CoreS3 (16 kHz, 16 bit, mono)
