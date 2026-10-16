@@ -1,7 +1,7 @@
 
 ## M5Stack StickS3 (`esphome/sticks3.yaml`)
 
-Firmware dedicado ao **M5Stack StickS3** (ESP32-S3-PICO-1-N8R8: 8 MB flash, 8 MB PSRAM octal) que só transmite o microfone para o app Sound Monitor (UDP 5050, PCM 16 kHz/16 bit/mono) e mostra uma tela de status (Wi-Fi/IP, HA, áudio, último alerta).
+Firmware dedicado ao **M5Stack StickS3** (ESP32-S3-PICO-1-N8R8: 8 MB flash, 8 MB PSRAM octal) que só transmite o microfone para o app Sound Monitor (UDP 5050, PCM 16 kHz/16 bit/mono) e mostra uma tela de status (logo, Wi-Fi/IP, HA, áudio, último alerta).
 
 Pinos (docs.m5stack.com/en/core/StickS3 + M5GFX/M5Unified):
 

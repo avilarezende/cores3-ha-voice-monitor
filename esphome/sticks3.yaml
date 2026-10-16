@@ -145,6 +145,12 @@ font:
     size: 14
     glyphsets: [GF_Latin_Core]
 
+image:
+  - file: calico_logo_64.png
+    id: calico_logo
+    type: RGB565
+    transparency: alpha_channel
+
 display:
   - platform: mipi_spi
     id: lcd
@@ -164,6 +170,7 @@ display:
     update_interval: 10s
     lambda: |-
       it.fill(Color::BLACK);
+      it.image(4, 4, id(calico_logo));
       auto ip = id(wifi_ip).state;
       it.printf(74, 6,  id(f_small), Color::WHITE, "StickS3 Monitor");
       it.printf(74, 26, id(f_small), ip.empty() ? Color(255,80,80) : Color(120,255,120), "WiFi: %s", ip.empty() ? "conectando" : ip.c_str());
