@@ -82,6 +82,9 @@ i2c_device:
   - id: pm1
     i2c_id: i2c_int
     address: ${pm1_addr}
+  - id: es_raw
+    i2c_id: i2c_int
+    address: 0x18
 
 # ES8311 (0x18) — I2S: MCLK G18, BCLK G17, LRCK G15, dados do mic -> ESP G16 (M5Unified)
 audio_dac:
@@ -93,7 +96,7 @@ audio_dac:
     use_mclk: true
     sample_rate: 16000
     bits_per_sample: 16bit
-    mic_gain: 42DB
+    mic_gain: 0DB
 
 i2s_audio:
   - id: i2s_bus
@@ -223,3 +226,28 @@ text_sensor:
     entity_id: sensor.ultimo_perigo_detectado
     on_value:
       - component.update: lcd
+
+# Mantém o microfone capturando quando o monitor está ligado (não chamar no setup: crash)
+interval:
+  - interval: 5s
+    then:
+      - if:
+          condition:
+            and:
+              - switch.is_on: sound_monitor_switch
+              - not: { microphone.is_capturing: mic }
+          then:
+            - microphone.capture: mic
+            - delay: 500ms
+            # Sequência do M5Unified (_microphone_enabled_cb_sticks3) para o ADC do ES8311
+            - lambda: |-
+                const uint8_t seq[][2] = {{0x00,0x80},{0x01,0xBA},{0x02,0x18},{0x0D,0x01},
+                  {0x0E,0x02},{0x14,0x10},{0x17,0xBF},{0x1C,0x6A}};
+                for (auto &r : seq) id(es_raw).write_byte(r[0], r[1]);
+                ESP_LOGI("sticks3", "ES8311 ADC configurado (M5Unified)");
+      - if:
+          condition:
+            and:
+              - switch.is_off: sound_monitor_switch
+              - microphone.is_capturing: mic
+          then: [ microphone.stop_capture: mic ]
