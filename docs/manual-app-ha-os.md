@@ -157,6 +157,26 @@ configuração dele. No Studio Code Server ou no app Samba, a pasta aparece como
 `addon_configs/<id>_sound_monitor/` (em versões mais novas, `app_configs/…`).
 Depois de editar, **reinicie o app**.
 
+Além das categorias, o `config.toml` aceita três chaves globais (todas opcionais; o padrão do app 0.2.0 já as traz):
+
+| Chave | Padrão | Efeito |
+|---|---|---|
+| `allowed_sources` | `[]` (qualquer IP) | Só classifica UDP vindo destes IPs. Um pacote de outra origem (por exemplo o roteador) é ignorado e logado uma vez |
+| `min_fresh_fraction` | `0.9` | Exige que esta fração da janela de 0,975 s tenha chegado nos últimos 1,5 s. Pacotes soltos deixam o buffer velho e não vão ao YAMNet |
+| `near_miss_fraction` | `0.0` (desligado) | Com log em `INFO`, quando uma categoria chega a esta fração do limiar o app registra as 5 classes mais prováveis. `DEBUG` continua mostrando toda janela |
+
+Cada categoria pode, além dos parâmetros abaixo, vetar um acerto quando outro som domina — útil quando periquitos disparam a campainha. A janela deixa de contar se `veto >= veto_min` e `veto >= pontuação × veto_ratio`, a menos que algum rótulo em `strong_labels` passe de `strong_threshold` (um toque tonal claro ainda conta). Padrões: `veto_min` 0,15, `veto_ratio` 1,0, `strong_threshold` 1,1 (sem rótulos fortes, o veto não é anulado). Exemplo na categoria `campainha`, comentado no `config.toml` distribuído:
+
+```toml
+veto_labels = ["Bird", "Bird vocalization, bird call, bird song", "Chirp, tweet", "Squawk"]
+veto_min = 0.15
+veto_ratio = 1.0
+strong_labels = ["Ding-dong"]
+strong_threshold = 0.45
+```
+
+Quem já tem um `config.toml` editado não recebe essas chaves sozinho (o app só copia o arquivo na primeira execução). Vale acrescentá-las à mão e reiniciar o app. A versão do app precisa ser **0.2.0** ou mais nova.
+
 Cada categoria tem quatro parâmetros:
 
 | Parâmetro | Efeito | Se houver alarmes falsos | Se perder eventos reais |
@@ -197,8 +217,9 @@ os pontos em que um evento seria disparado com o `config.toml` atual.
 ## 6. Atualizar o app
 
 O Home Assistant só oferece atualização quando o campo `version` de `sound-monitor/config.yaml`
-muda no GitHub. Ao alterar o código do app, aumente a versão (por exemplo, `0.1.0` → `0.1.1`) e
-publique. A atualização aparece em **Configurações → Apps**. O `config.toml` editado e os clipes são preservados.
+muda no GitHub. A versão atual do app é **0.2.0**. Ao alterar o código do app, aumente a versão
+(por exemplo, `0.2.0` → `0.2.1`) e publique. A atualização aparece em **Configurações → Apps**.
+O `config.toml` editado e os clipes são preservados.
 
 ## Solução de problemas
 
@@ -213,6 +234,9 @@ publique. A atualização aparece em **Configurações → Apps**. O `config.tom
 | Notificação aparece, mas o CoreS3 não fala | entidade `satellite` errada | Corrija a variável no pacote; veja o rastreamento da automação `monitor_perigo_reagir` |
 | `Falha ao avisar o Home Assistant` no log | sem `homeassistant_api` ou HA reiniciando | Reinicie o app depois do HA |
 | Muitos alarmes falsos | limiar baixo para o seu ambiente | Seção 5; ouça os clipes para ver o que disparou |
+| Log `Ignorando áudio de <IP>` | UDP de um aparelho fora de `allowed_sources` | Inclua o IP do CoreS3/StickS3 na lista, ou esvazie a lista para aceitar todos |
+| Campainha dispara com pássaros | YAMNet confunde canto com toque | `veto_labels` na categoria (seção 5); um toque forte continua valendo via `strong_labels` |
+| Alarme falso horas depois do último som real | Pacotes soltos preenchem um buffer antigo e o YAMNet pontua o resto | `allowed_sources` e `min_fresh_fraction` (seção 5); no 0.2.0 isso já vem ligado para fração 0,9 |
 
 ## Limitações
 
