@@ -3,7 +3,8 @@
 Este manual cobre a parte do dispositivo: preparar o assistente de voz do Home Assistant, compilar
 o firmware ESPHome, gravá-lo no **M5Stack CoreS3** (ESP32-S3) e conectá-lo ao Home Assistant.
 A parte do servidor (app Sound Monitor, reações e ajuste da detecção) está em
-[manual-app-ha-os.md](manual-app-ha-os.md).
+[manual-app-ha-os.md](manual-app-ha-os.md). O firmware do **M5Stack StickS3**
+(só o monitor, sem Assist) está no [README](../README.md).
 
 ## O que o firmware faz
 

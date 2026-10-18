@@ -9,6 +9,18 @@ hop_seconds = 0.5      # uma inferência a cada 0,5 s (janelas de 0,975 s com so
 clip_seconds = 4.0     # duração do WAV salvo em CLIPS_DIR para cada evento
 min_rms_dbfs = -65.0   # janelas mais silenciosas que isso não passam pelo modelo
 
+# Só aceita UDP destes IPs. Lista vazia = qualquer origem. Sirva para ignorar
+# pacotes espúrios (por exemplo o roteador) que reaproveitam um buffer velho.
+allowed_sources = []
+
+# Fração mínima da janela do YAMNet (0,975 s) recebida nos últimos 1,5 s.
+# Abaixo disso o buffer é considerado velho e não vai ao modelo.
+min_fresh_fraction = 0.9
+
+# Se > 0 e o log não está em DEBUG, registra as 5 classes principais quando
+# alguma categoria chega a esta fração do limiar. 0 desliga.
+near_miss_fraction = 0.0
+
 [categories.grito]
 labels = ["Screaming", "Yell"]
 threshold = 0.35
@@ -29,6 +41,14 @@ threshold = 0.30
 window = 2
 min_hits = 1
 cooldown_seconds = 20
+# Veto opcional (periquitos e outros pássaros). A janela deixa de contar quando
+# veto >= veto_min e veto >= score * veto_ratio, a menos que um rótulo forte
+# (toque real) passe de strong_threshold. Exemplo:
+# veto_labels = ["Bird", "Bird vocalization, bird call, bird song", "Chirp, tweet", "Squawk"]
+# veto_min = 0.15
+# veto_ratio = 1.0
+# strong_labels = ["Ding-dong"]
+# strong_threshold = 0.45
 
 [categories.alarme_incendio]
 labels = ["Smoke detector, smoke alarm", "Fire alarm"]
