@@ -6,6 +6,9 @@ substitutions:
   sound_monitor_host: 192.168.31.18
   sound_monitor_port: "5050"
   pm1_addr: "0x6E"
+  # dBFS: 0 = fundo de escala. Abaixo disto, por mic_silence_ms, o ES8311 é reinicializado.
+  mic_silence_dbfs: "-90.0"
+  mic_silence_ms: "180000"
 
 esphome:
   name: ${name}
@@ -96,7 +99,7 @@ audio_dac:
     use_mclk: true
     sample_rate: 16000
     bits_per_sample: 16bit
-    mic_gain: 0DB
+    mic_gain: 24DB
 
 i2s_audio:
   - id: i2s_bus
@@ -178,7 +181,12 @@ display:
       it.printf(74, 6,  id(f_small), Color::WHITE, "StickS3 Monitor");
       it.printf(74, 26, id(f_small), ip.empty() ? Color(255,80,80) : Color(120,255,120), "WiFi: %s", ip.empty() ? "conectando" : ip.c_str());
       it.printf(74, 46, id(f_small), Color::WHITE, "HA: %s", api::global_api_server->is_connected() ? "conectado" : "aguardando");
-      it.printf(4, 74, id(f_small), Color::WHITE, "Audio: %s", id(sound_stream).is_streaming() ? "transmitindo" : "desligado");
+      float db = id(mic_rms).state;
+      if (id(sound_stream).is_streaming() && (db == db)) {
+        it.printf(4, 74, id(f_small), db < ${mic_silence_dbfs}f ? Color(255, 80, 80) : Color::WHITE, "Audio: %d dBFS", (int) db);
+      } else {
+        it.printf(4, 74, id(f_small), Color::WHITE, "Audio: %s", id(sound_stream).is_streaming() ? "transmitindo" : "desligado");
+      }
       auto a = id(ultimo_alerta).state;
       it.printf(4, 96, id(f_small), Color(255,200,0), "Alerta: %s", (a.empty() || a == "unknown") ? "-" : a.c_str());
       it.printf(4, 116, id(f_small), Color(150,150,150), "A: liga/desliga audio");
@@ -227,27 +235,161 @@ text_sensor:
     on_value:
       - component.update: lcd
 
-# Mantém o microfone capturando quando o monitor está ligado (não chamar no setup: crash)
+button:
+  - platform: restart
+    id: restart_device
+    name: "Reiniciar"
+    icon: "mdi:restart"
+    entity_category: config
+
+sensor:
+  # 0 dB = fundo de escala (dBFS). Passivo: só mede enquanto o monitor captura.
+  - platform: sound_level
+    passive: true
+    measurement_duration: 1s
+    microphone:
+      microphone: mic
+    rms:
+      id: mic_rms
+      name: "Nível do microfone"
+      icon: "mdi:microphone"
+      accuracy_decimals: 1
+      entity_category: diagnostic
+      state_class: measurement
+
+globals:
+  - id: mic_silent_since
+    type: uint32_t
+    restore_value: false
+    initial_value: "0"
+  - id: mic_heal_attempted
+    type: bool
+    restore_value: false
+    initial_value: "false"
+  - id: mic_heal_busy
+    type: bool
+    restore_value: false
+    initial_value: "false"
+  - id: es8311_ok
+    type: bool
+    restore_value: false
+    initial_value: "true"
+
+script:
+  # Sequência do M5Unified (_microphone_enabled_cb_sticks3) + ADC scale 24 dB (mic_gain).
+  # 0x16 = 4 é o valor do enum ES8311 24DB. Não chama no setup: o codec ainda não tem clock.
+  - id: apply_es8311_adc
+    mode: single
+    parameters:
+      restart_on_fail: bool
+    then:
+      - lambda: |-
+          const uint8_t seq[][2] = {
+            {0x00, 0x80}, {0x01, 0xBA}, {0x02, 0x18}, {0x0D, 0x01}, {0x0E, 0x02},
+            {0x14, 0x10}, {0x16, 0x04}, {0x17, 0xBF}, {0x1C, 0x6A},
+          };
+          bool ok = true;
+          for (auto &r : seq) {
+            if (!id(es_raw).write_byte(r[0], r[1])) ok = false;
+          }
+          id(es8311_ok) = ok;
+          if (ok) {
+            ESP_LOGI("sticks3", "ES8311 ADC configurado (M5Unified, ganho 24 dB)");
+          } else {
+            ESP_LOGE("sticks3", "Falha de I2C ao escrever o ES8311");
+          }
+      - if:
+          condition:
+            lambda: return restart_on_fail && !id(es8311_ok);
+          then:
+            - logger.log:
+                level: ERROR
+                format: "Reinicialização do ES8311 falhou; reiniciando o StickS3"
+            - button.press: restart_device
+
+# Mantém o microfone capturando quando o monitor está ligado (não chamar no setup: crash).
+# Se o nível fica abaixo de mic_silence_dbfs por vários minutos enquanto transmite,
+# regrava o ES8311 e reabre o microfone; se isso não recuperar, reinicia.
 interval:
   - interval: 5s
     then:
       - if:
           condition:
             and:
+              - lambda: return !id(mic_heal_busy);
               - switch.is_on: sound_monitor_switch
               - not: { microphone.is_capturing: mic }
           then:
             - microphone.capture: mic
             - delay: 500ms
-            # Sequência do M5Unified (_microphone_enabled_cb_sticks3) para o ADC do ES8311
-            - lambda: |-
-                const uint8_t seq[][2] = {{0x00,0x80},{0x01,0xBA},{0x02,0x18},{0x0D,0x01},
-                  {0x0E,0x02},{0x14,0x10},{0x17,0xBF},{0x1C,0x6A}};
-                for (auto &r : seq) id(es_raw).write_byte(r[0], r[1]);
-                ESP_LOGI("sticks3", "ES8311 ADC configurado (M5Unified)");
+            - script.execute:
+                id: apply_es8311_adc
+                restart_on_fail: false
       - if:
           condition:
             and:
+              - lambda: return !id(mic_heal_busy);
               - switch.is_off: sound_monitor_switch
               - microphone.is_capturing: mic
           then: [ microphone.stop_capture: mic ]
+      - if:
+          condition:
+            lambda: |-
+              if (id(mic_heal_busy) || !id(sound_stream).is_streaming()) return false;
+              float level = id(mic_rms).state;
+              return (level == level) && level < ${mic_silence_dbfs}f;
+          then:
+            - lambda: |-
+                if (id(mic_silent_since) == 0) {
+                  id(mic_silent_since) = millis();
+                  ESP_LOGW("sticks3", "Microfone em %d dBFS (limiar -90); cronômetro de silêncio iniciado",
+                           (int) id(mic_rms).state);
+                }
+            - if:
+                condition:
+                  lambda: return id(mic_silent_since) != 0 && (millis() - id(mic_silent_since) >= ${mic_silence_ms});
+                then:
+                  - if:
+                      condition:
+                        lambda: return id(mic_heal_attempted);
+                      then:
+                        - logger.log:
+                            level: ERROR
+                            format: "Microfone segue abaixo de -90 dBFS depois da reinicialização; reiniciando o StickS3"
+                        - button.press: restart_device
+                      else:
+                        - lambda: |-
+                            id(mic_heal_attempted) = true;
+                            id(mic_silent_since) = 0;
+                            id(mic_heal_busy) = true;
+                            ESP_LOGW("sticks3", "Microfone em %d dBFS por vários minutos; reinicializando ES8311",
+                                     (int) id(mic_rms).state);
+                        - microphone.stop_capture: mic
+                        - delay: 300ms
+                        - microphone.capture: mic
+                        - delay: 500ms
+                        - script.execute:
+                            id: apply_es8311_adc
+                            restart_on_fail: true
+                        - if:
+                            condition:
+                              not: { microphone.is_capturing: mic }
+                            then:
+                              - logger.log:
+                                  level: ERROR
+                                  format: "Microfone não voltou a capturar; reiniciando o StickS3"
+                              - button.press: restart_device
+                        - lambda: id(mic_heal_busy) = false;
+          else:
+            - lambda: |-
+                float level = id(mic_rms).state;
+                bool known = (level == level);
+                if (id(sound_stream).is_streaming() && known && level >= ${mic_silence_dbfs}f) {
+                  if (id(mic_silent_since) != 0 || id(mic_heal_attempted)) {
+                    ESP_LOGI("sticks3", "Microfone recuperado (%d dBFS)", (int) level);
+                  }
+                  id(mic_silent_since) = 0;
+                  id(mic_heal_attempted) = false;
+                } else if (!id(sound_stream).is_streaming() && !id(mic_heal_attempted)) {
+                  id(mic_silent_since) = 0;
+                }
