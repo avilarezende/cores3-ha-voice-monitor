@@ -48,6 +48,16 @@ class Category:
     window: int
     cooldown_seconds: float
     label_indices: list[int] = field(default_factory=list)
+    # Filtro de pássaros (periquitos): a janela não conta como acerto quando as classes
+    # de veto dominam (veto >= veto_min e veto >= score * veto_ratio), a menos que algum
+    # rótulo "forte" (toque tonal real) passe de strong_threshold.
+    veto_labels: list[str] = field(default_factory=list)
+    veto_indices: list[int] = field(default_factory=list)
+    veto_min: float = 0.15
+    veto_ratio: float = 1.0
+    strong_labels: list[str] = field(default_factory=list)
+    strong_indices: list[int] = field(default_factory=list)
+    strong_threshold: float = 1.1
 
 
 @dataclass
@@ -56,6 +66,12 @@ class Settings:
     clip_seconds: float
     min_rms_dbfs: float
     categories: list[Category]
+    # Só aceita áudio destes IPs (vazio = todos). Evita fontes espúrias (ex.: roteador).
+    allowed_sources: list[str] = field(default_factory=list)
+    # Exige áudio contínuo: fração mínima da janela recebida nos últimos ~1,5 s.
+    min_fresh_fraction: float = 0.9
+    # Loga as classes principais quando uma categoria chega a esta fração do limiar.
+    near_miss_fraction: float = 0.0
 
 
 def load_settings(path: Path, class_names: list[str]) -> Settings:
@@ -63,7 +79,8 @@ def load_settings(path: Path, class_names: list[str]) -> Settings:
     index = {name: i for i, name in enumerate(class_names)}
     categories = []
     for name, conf in raw["categories"].items():
-        missing = [label for label in conf["labels"] if label not in index]
+        extra = conf.get("veto_labels", []) + conf.get("strong_labels", [])
+        missing = [label for label in conf["labels"] + extra if label not in index]
         if missing:
             raise ValueError(f"Categoria '{name}': rótulos inexistentes no YAMNet: {missing}")
         if conf["min_hits"] > conf["window"]:
@@ -77,6 +94,13 @@ def load_settings(path: Path, class_names: list[str]) -> Settings:
                 window=conf["window"],
                 cooldown_seconds=conf["cooldown_seconds"],
                 label_indices=[index[label] for label in conf["labels"]],
+                veto_labels=conf.get("veto_labels", []),
+                veto_indices=[index[label] for label in conf.get("veto_labels", [])],
+                veto_min=conf.get("veto_min", 0.15),
+                veto_ratio=conf.get("veto_ratio", 1.0),
+                strong_labels=conf.get("strong_labels", []),
+                strong_indices=[index[label] for label in conf.get("strong_labels", [])],
+                strong_threshold=conf.get("strong_threshold", 1.1),
             )
         )
     return Settings(
@@ -84,6 +108,9 @@ def load_settings(path: Path, class_names: list[str]) -> Settings:
         clip_seconds=raw["clip_seconds"],
         min_rms_dbfs=raw["min_rms_dbfs"],
         categories=categories,
+        allowed_sources=raw.get("allowed_sources", []),
+        min_fresh_fraction=raw.get("min_fresh_fraction", 0.9),
+        near_miss_fraction=raw.get("near_miss_fraction", 0.0),
     )
 
 
@@ -124,10 +151,16 @@ class DeviceStream:
         self.last_fired = {c.name: float("-inf") for c in settings.categories}
         self.received_samples = 0
         self.stats_since = time.monotonic()
+        self.recent = collections.deque()  # (instante, amostras) dos últimos pacotes
+        self.vetoed = {c.name: 0 for c in settings.categories}
 
     def push(self, pcm: np.ndarray) -> bool:
         """Acrescenta amostras; devolve True quando é hora de rodar a inferência."""
         n = len(pcm)
+        now = time.monotonic()
+        self.recent.append((now, n))
+        while self.recent and now - self.recent[0][0] > 1.5:
+            self.recent.popleft()
         self.buffer = np.roll(self.buffer, -n)
         self.buffer[-n:] = pcm
         self.samples_since_inference += n
@@ -137,6 +170,11 @@ class DeviceStream:
             self.samples_since_inference = 0
             return True
         return False
+
+    def fresh(self) -> bool:
+        """True se a janela inteira veio de áudio contínuo (não de pacotes soltos)."""
+        got = sum(n for _, n in self.recent)
+        return got >= WINDOW_SAMPLES * self.settings.min_fresh_fraction
 
     def window(self) -> np.ndarray:
         return self.buffer[-WINDOW_SAMPLES:]
@@ -148,7 +186,16 @@ class DeviceStream:
             category_scores = scores[category.label_indices]
             best = int(np.argmax(category_scores))
             score = float(category_scores[best])
-            self.history[category.name].append(score >= category.threshold)
+            hit = score >= category.threshold
+            if hit and category.veto_indices:
+                veto = float(scores[category.veto_indices].max())
+                strong = float(scores[category.strong_indices].max()) if category.strong_indices else 0.0
+                if veto >= category.veto_min and veto >= score * category.veto_ratio and strong < category.strong_threshold:
+                    hit = False
+                    self.vetoed[category.name] += 1
+                    log.info("%s: %s vetado (%s=%.2f, pássaros=%.2f)", self.address, category.name,
+                             category.labels[best], score, veto)
+            self.history[category.name].append(hit)
             self.best[category.name].append((score, category.labels[best]))
 
             hits = sum(self.history[category.name])
@@ -172,7 +219,10 @@ class DeviceStream:
         elapsed = now - self.stats_since
         if elapsed >= 60:
             audio_seconds = self.received_samples / SAMPLE_RATE
-            log.info("%s: %.1f s de áudio recebidos em %.0f s", self.address, audio_seconds, elapsed)
+            vetos = ", ".join(f"{k}={v}" for k, v in self.vetoed.items() if v)
+            log.info("%s: %.1f s de áudio recebidos em %.0f s%s", self.address, audio_seconds, elapsed,
+                     f" | vetos: {vetos}" if vetos else "")
+            self.vetoed = {k: 0 for k in self.vetoed}
             self.received_samples = 0
             self.stats_since = now
 
@@ -263,9 +313,15 @@ def serve(args, model: YamNet, settings: Settings) -> None:
     log.info("Categorias: %s", ", ".join(c.name for c in settings.categories))
 
     streams: dict[str, DeviceStream] = {}
+    ignored: set[str] = set()
     while True:
         payload, (address, _) = sock.recvfrom(4096)
         if len(payload) % 2:
+            continue
+        if settings.allowed_sources and address not in settings.allowed_sources:
+            if address not in ignored:
+                ignored.add(address)
+                log.info("Ignorando áudio de %s (fora de allowed_sources)", address)
             continue
         stream = streams.get(address)
         if stream is None:
@@ -277,11 +333,21 @@ def serve(args, model: YamNet, settings: Settings) -> None:
         if not stream.push(np.frombuffer(payload, dtype="<i2")):
             continue
 
+        if not stream.fresh():
+            continue  # pacotes soltos: o buffer é velho e daria falso positivo
         window = stream.window()
         level = rms_dbfs(window)
         if level < settings.min_rms_dbfs:
             continue
         scores = model.scores(window)
+        if settings.near_miss_fraction > 0 and not log.isEnabledFor(logging.DEBUG):
+            for c in settings.categories:
+                sc = float(scores[c.label_indices].max())
+                if c.threshold * settings.near_miss_fraction <= sc:
+                    top = np.argsort(scores)[::-1][:5]
+                    log.info("%s %.0f dBFS quase %s=%.2f | %s", address, level, c.name, sc,
+                             ", ".join(f"{model.class_names[i]}={scores[i]:.2f}" for i in top))
+                    break
         if log.isEnabledFor(logging.DEBUG):
             top = np.argsort(scores)[::-1][:3]
             log.debug(
