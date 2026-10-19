@@ -13,6 +13,7 @@ import collections
 import csv
 import json
 import logging
+import logging.handlers
 import os
 import shutil
 import socket
@@ -58,6 +59,10 @@ class Category:
     strong_labels: list[str] = field(default_factory=list)
     strong_indices: list[int] = field(default_factory=list)
     strong_threshold: float = 1.1
+    # Rejeita bipes curtos: com min_active_ms > 0, a janela do acerto precisa ter pelo menos
+    # esse tempo (em blocos de 50 ms) a até active_db dB do pico da janela.
+    min_active_ms: int = 0
+    active_db: float = 10.0
 
 
 @dataclass
@@ -72,6 +77,11 @@ class Settings:
     min_fresh_fraction: float = 0.9
     # Loga as classes principais quando uma categoria chega a esta fração do limiar.
     near_miss_fraction: float = 0.0
+    # Arquivo de log persistente (rotativo, 5 MB x 3), ex.: /media/sound-monitor/monitor.log
+    log_file: str = ""
+    # Categorias cujos "quase" também salvam um WAV (prefixo quase_), no máx. 1 a cada N s.
+    near_miss_clips: list[str] = field(default_factory=list)
+    near_miss_clip_cooldown: float = 10.0
 
 
 def load_settings(path: Path, class_names: list[str]) -> Settings:
@@ -101,6 +111,8 @@ def load_settings(path: Path, class_names: list[str]) -> Settings:
                 strong_labels=conf.get("strong_labels", []),
                 strong_indices=[index[label] for label in conf.get("strong_labels", [])],
                 strong_threshold=conf.get("strong_threshold", 1.1),
+                min_active_ms=int(conf.get("min_active_ms", 0)),
+                active_db=float(conf.get("active_db", 10.0)),
             )
         )
     return Settings(
@@ -111,6 +123,9 @@ def load_settings(path: Path, class_names: list[str]) -> Settings:
         allowed_sources=raw.get("allowed_sources", []),
         min_fresh_fraction=raw.get("min_fresh_fraction", 0.9),
         near_miss_fraction=raw.get("near_miss_fraction", 0.0),
+        log_file=raw.get("log_file", ""),
+        near_miss_clips=raw.get("near_miss_clips", []),
+        near_miss_clip_cooldown=raw.get("near_miss_clip_cooldown", 10.0),
     )
 
 
@@ -130,6 +145,17 @@ class YamNet:
         self.interpreter.set_tensor(self.input_index, waveform)
         self.interpreter.invoke()
         return self.interpreter.get_tensor(self.output_index).reshape(-1)
+
+
+def active_ms(samples: np.ndarray, below_peak_db: float) -> int:
+    """Tempo (ms) da janela em blocos de 50 ms com energia a até below_peak_db dB do pico."""
+    block = SAMPLE_RATE // 20
+    n = len(samples) // block
+    if n == 0:
+        return 0
+    frames = samples[: n * block].astype(np.float64).reshape(n, block)
+    db = 10 * np.log10(np.mean(frames**2, axis=1) + 1e-9)
+    return int(np.sum(db >= db.max() - below_peak_db) * 50)
 
 
 def rms_dbfs(samples: np.ndarray) -> float:
@@ -179,7 +205,7 @@ class DeviceStream:
     def window(self) -> np.ndarray:
         return self.buffer[-WINDOW_SAMPLES:]
 
-    def evaluate(self, scores: np.ndarray, now: float) -> list[dict]:
+    def evaluate(self, scores: np.ndarray, now: float, window: np.ndarray | None = None) -> list[dict]:
         """Atualiza a votação por categoria e devolve os eventos confirmados."""
         events = []
         for category in self.settings.categories:
@@ -195,6 +221,13 @@ class DeviceStream:
                     self.vetoed[category.name] += 1
                     log.info("%s: %s vetado (%s=%.2f, pássaros=%.2f)", self.address, category.name,
                              category.labels[best], score, veto)
+            if hit and category.min_active_ms > 0 and window is not None:
+                strong = float(scores[category.strong_indices].max()) if category.strong_indices else 0.0
+                dur = active_ms(window, category.active_db)
+                if dur < category.min_active_ms and strong < category.strong_threshold:
+                    hit = False
+                    log.info("%s: %s ignorado, som curto (%s=%.2f, %d ms < %d ms)", self.address, category.name,
+                             category.labels[best], score, dur, category.min_active_ms)
             self.history[category.name].append(hit)
             self.best[category.name].append((score, category.labels[best]))
 
@@ -272,6 +305,15 @@ class Notifier:
         except (urllib.error.URLError, TimeoutError) as err:
             log.error("Falha ao avisar o Home Assistant: %s", err)
 
+    def save_clip(self, suffix: str, clip: np.ndarray) -> None:
+        if self.clips_dir:
+            self.executor.submit(self._save, suffix, clip.copy())
+
+    def _save(self, suffix: str, clip: np.ndarray) -> None:
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        write_wav(self.clips_dir / f"{stamp}_{suffix}.wav", clip)
+        self._prune_clips()
+
     def _prune_clips(self) -> None:
         # Nomes começam com data/hora, então a ordem alfabética é a cronológica.
         clips = sorted(self.clips_dir.glob("*.wav"))
@@ -302,6 +344,14 @@ def read_wav(path: Path) -> np.ndarray:
 
 
 def serve(args, model: YamNet, settings: Settings) -> None:
+    if settings.log_file:
+        Path(settings.log_file).parent.mkdir(parents=True, exist_ok=True)
+        handler = logging.handlers.RotatingFileHandler(settings.log_file, maxBytes=5_000_000, backupCount=3,
+                                                       encoding="utf-8")
+        handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+        handler.setLevel(logging.INFO)
+        logging.getLogger().addHandler(handler)
+        log.info("Log persistente em %s", settings.log_file)
     notifier = Notifier(
         Path(os.environ["CLIPS_DIR"]) if os.environ.get("CLIPS_DIR") else None,
         int(os.environ.get("MAX_CLIPS", "200")),
@@ -314,6 +364,7 @@ def serve(args, model: YamNet, settings: Settings) -> None:
 
     streams: dict[str, DeviceStream] = {}
     ignored: set[str] = set()
+    last_near_clip = float("-inf")
     while True:
         payload, (address, _) = sock.recvfrom(4096)
         if len(payload) % 2:
@@ -341,13 +392,17 @@ def serve(args, model: YamNet, settings: Settings) -> None:
             continue
         scores = model.scores(window)
         if settings.near_miss_fraction > 0 and not log.isEnabledFor(logging.DEBUG):
-            for c in settings.categories:
-                sc = float(scores[c.label_indices].max())
-                if c.threshold * settings.near_miss_fraction <= sc:
-                    top = np.argsort(scores)[::-1][:5]
-                    log.info("%s %.0f dBFS quase %s=%.2f | %s", address, level, c.name, sc,
-                             ", ".join(f"{model.class_names[i]}={scores[i]:.2f}" for i in top))
-                    break
+            near = [(c, float(scores[c.label_indices].max())) for c in settings.categories]
+            near = [(c, sc) for c, sc in near if sc >= c.threshold * settings.near_miss_fraction]
+            if near:
+                top = np.argsort(scores)[::-1][:5]
+                log.info("%s %.0f dBFS quase %s | %d ms ativos | %s", address, level,
+                         ", ".join(f"{c.name}={sc:.2f}" for c, sc in near), active_ms(window, 10.0),
+                         ", ".join(f"{model.class_names[i]}={scores[i]:.2f}" for i in top))
+                names = [c.name for c, _ in near if c.name in settings.near_miss_clips]
+                if names and now - last_near_clip >= settings.near_miss_clip_cooldown:
+                    last_near_clip = now
+                    notifier.save_clip(f"quase_{names[0]}_{max(sc for c, sc in near if c.name == names[0]):.2f}", stream.buffer)
         if log.isEnabledFor(logging.DEBUG):
             top = np.argsort(scores)[::-1][:3]
             log.debug(
@@ -356,7 +411,7 @@ def serve(args, model: YamNet, settings: Settings) -> None:
                 level,
                 ", ".join(f"{model.class_names[i]}={scores[i]:.2f}" for i in top),
             )
-        for event in stream.evaluate(scores, now):
+        for event in stream.evaluate(scores, now, window):
             log.warning("PERIGO %s (%s, %.2f) em %s", event["category"], event["label"], event["score"], address)
             notifier.submit(event, stream.buffer)
 
@@ -377,7 +432,7 @@ def classify(args, model: YamNet, settings: Settings) -> None:
         print(f"t={start / SAMPLE_RATE:6.2f}s {rms_dbfs(window):5.0f} dBFS")
         print("   top: " + ", ".join(f"{model.class_names[i]}={scores[i]:.2f}" for i in top))
         print("   categorias: " + ", ".join(f"{k}={v:.2f}" for k, v in per_category.items()))
-        for event in stream.evaluate(scores, start / SAMPLE_RATE):
+        for event in stream.evaluate(scores, start / SAMPLE_RATE, window):
             print(f"   >>> EVENTO {event['category']} ({event['label']}, {event['score']:.2f})")
 
 
