@@ -1,5 +1,5 @@
 name: Sound Monitor
-version: "0.2.1"
+version: "0.3.0"
 slug: sound_monitor
 description: >-
   Detecta gritos, latidos, campainhas, alarmes de incêndio e explosões no áudio
@@ -11,6 +11,14 @@ arch:
 startup: application
 boot: auto
 homeassistant_api: true
+hassio_api: true
+services:
+  - mqtt:want
+ingress: true
+ingress_port: 8099
+ingress_stream: true
+panel_icon: mdi:ear-hearing
+panel_title: StickS3 ao vivo
 ports:
   5050/udp: 5050
 ports_description:
@@ -23,9 +31,12 @@ map:
 environment:
   CONFIG_PATH: /config/config.toml
   CLIPS_DIR: /media/sound-monitor
+  LIVE_PORT: "8099"
 options:
   log_level: INFO
   max_clips: 200
+  live_device_mac: ""
 schema:
   log_level: list(DEBUG|INFO|WARNING|ERROR)
   max_clips: int(1,5000)
+  live_device_mac: match(^$|^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$)?

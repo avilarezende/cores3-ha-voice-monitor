@@ -17,6 +17,7 @@ import logging.handlers
 import os
 import shutil
 import socket
+import threading
 import time
 import tomllib
 import urllib.error
@@ -28,6 +29,8 @@ from datetime import datetime
 from pathlib import Path
 
 import numpy as np
+
+import live
 from ai_edge_litert.interpreter import Interpreter
 
 SAMPLE_RATE = 16000
@@ -362,6 +365,14 @@ def serve(args, model: YamNet, settings: Settings) -> None:
     log.info("Escutando PCM 16 kHz/16 bit/mono em UDP %d", args.port)
     log.info("Categorias: %s", ", ".join(c.name for c in settings.categories))
 
+    relay = live.LiveRelay()
+    link = None
+    if args.live_port:
+        live.start_http(relay, args.live_port)
+        link = live.DeviceLink(relay, os.environ.get("LIVE_DEVICE_MAC", ""), os.environ.get("LIVE_ADDON_SLUG", ""))
+        threading.Thread(target=link.start, name="live-mqtt", daemon=True).start()
+    last_packet: dict[str, float] = {}
+
     streams: dict[str, DeviceStream] = {}
     ignored: set[str] = set()
     last_near_clip = float("-inf")
@@ -374,6 +385,13 @@ def serve(args, model: YamNet, settings: Settings) -> None:
                 ignored.add(address)
                 log.info("Ignorando áudio de %s (fora de allowed_sources)", address)
             continue
+        if relay.active:
+            relay.feed(address, payload)
+        now = time.monotonic()
+        if link and now - last_packet.get(address, now - 31) > 30:
+            # stream voltou (StickS3 reiniciou): a ESPHome regrava o dispositivo; refaz o link depois
+            threading.Timer(25, link.announce, kwargs={"reset": True}).start()
+        last_packet[address] = now
         stream = streams.get(address)
         if stream is None:
             log.info("Novo dispositivo transmitindo: %s", address)
@@ -455,6 +473,7 @@ def apply_app_options() -> None:
     options = json.loads(APP_OPTIONS_PATH.read_text(encoding="utf-8"))
     os.environ["LOG_LEVEL"] = options.get("log_level", "INFO")
     os.environ["MAX_CLIPS"] = str(options.get("max_clips", 200))
+    os.environ.setdefault("LIVE_DEVICE_MAC", options.get("live_device_mac", ""))
 
 
 def ensure_config(path: Path) -> None:
@@ -474,6 +493,8 @@ def main() -> None:
     sub = parser.add_subparsers(dest="mode", required=True)
     serve_parser = sub.add_parser("serve")
     serve_parser.add_argument("--port", type=int, default=int(os.environ.get("UDP_PORT", "5050")))
+    serve_parser.add_argument("--live-port", type=int, default=int(os.environ.get("LIVE_PORT", "0")),
+                              help="porta HTTP da escuta ao vivo (0 = desligada)")
     classify_parser = sub.add_parser("classify")
     classify_parser.add_argument("file")
     send_parser = sub.add_parser("send")

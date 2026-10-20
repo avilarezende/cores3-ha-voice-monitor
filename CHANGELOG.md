@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.3.0
+
+### Sound Monitor
+
+- **Escuta ao vivo** pelo ingress do Home Assistant (autenticado, funciona pelo túnel/app). O app repassa o PCM já recebido do StickS3 sem recodificar (16 kHz mono, ~32 kB/s); sem ouvinte o custo é um teste de booleano no laço UDP. Página com botão "Ouvir" (Web Audio, compatível com o app do HA e iOS) e `stream.wav` para VLC. Só aceita conexões do proxy do ingress; nenhuma porta nova no host.
+- Opção `live_device_mac` (ex.: `70:04:1d:dc:4b:40`): com o Mosquitto, cria via MQTT discovery o sensor **Ouvintes ao vivo** no próprio dispositivo do StickS3 (mesma MAC) e põe o link "Visitar" do dispositivo na página ao vivo (`homeassistant://app/<slug>`). O link é refeito depois que a ESPHome reconecta.
+- Inclui 0.2.1: log persistente (`log_file`), WAV dos "quase" (`near_miss_clips`, `near_miss_clip_cooldown`), near-miss em todas as categorias, filtro opcional de bipe curto (`min_active_ms`).
+- O detector não muda: limiares e votação são os mesmos.
+
+### StickS3
+
+- Ganho do microfone 24 dB → 30 dB (`mic_gain` e o registrador 0x16 = 5 na auto-recuperação).
+
 ## 0.2.0
 
 ### Sound Monitor
