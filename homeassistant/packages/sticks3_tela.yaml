@@ -1,0 +1,13 @@
+# StickS3: acorda a tela (sai do "ponto de gravação") a cada evento do Sound Monitor.
+automation:
+  - id: sticks3_acordar_tela_monitor_perigo
+    alias: "StickS3: acordar tela em evento de som"
+    description: "Evento monitor_perigo (interfone, campainha, latido, etc.) → esphome.sticks3_monitor_dc4b40_acordar_tela"
+    mode: queued
+    max: 3
+    triggers:
+      - trigger: event
+        event_type: monitor_perigo
+    actions:
+      - action: esphome.sticks3_monitor_dc4b40_acordar_tela
+        continue_on_error: true
