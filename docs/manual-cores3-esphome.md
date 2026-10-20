@@ -6,6 +6,7 @@ A parte do servidor (app Sound Monitor, reações e ajuste da detecção) está 
 [manual-app-ha-os.md](manual-app-ha-os.md). O firmware do **M5Stack StickS3**
 (só o monitor, sem Assist) está no [README](../README.md). O ganho do microfone
 desse firmware (`mic_gain`, e o registrador 0x16 na auto-recuperação do ES8311) é **30 dB**.
+A tela do StickS3 apaga sozinha; a seção [Tela do StickS3](#tela-do-sticks3) descreve o ponto vermelho, as entidades e o pacote que a acorda.
 
 ## O que o firmware faz
 
@@ -225,6 +226,53 @@ Com o Home Assistant conectado, a tela mostra a casinha em repouso: o CoreS3 est
 | "Monitor de sons transmitindo" desligado | microfone mutado, HA desconectado, ou switch do monitor desligado | Confira **Microphone Mute** e **Monitor de sons perigosos** |
 | Logs com `Dropped N bytes` | Wi-Fi fraco | Aproxime o CoreS3 do roteador |
 | CoreS3 reinicia sozinho | fonte USB fraca | Use um carregador de pelo menos 5 V / 1 A |
+
+## Tela do StickS3
+
+O `esphome/sticks3.yaml` mostra logo, Wi-Fi/IP, Home Assistant, áudio e o último alerta. Sem atividade, essa imagem apaga.
+
+O número **Tela: apagar após** define o prazo em minutos (padrão **5**, de 0,5 a 60, passo 0,5, gravado no aparelho). Esgotado o prazo, a tela fica preta com um ponto vermelho no canto superior direito, 1 s aceso e 1 s apagado. O backlight desce para `screen_dot_brightness` (**25%**). Com a imagem ligada, o brilho é `screen_on_brightness` (**70%**). Qualquer despertar zera o cronômetro.
+
+A tela volta a mostrar a imagem quando acontece um destes:
+
+- Toque no botão **A** (GPIO11) ou **B** (GPIO12).
+- O sensor `sensor.ultimo_perigo_detectado` muda de valor.
+- O **Nível do microfone** sobe pelo menos `wake_jump_db` (**15 dB**) acima do fundo. O fundo é uma média lenta e anda enquanto o nível fica a até 6 dB dele, acompanhando o ambiente calmo.
+- Toque no botão **Acordar tela**.
+- Chamada da ação `esphome.<nó>_acordar_tela`.
+
+**Primeiro toque de A.** Com o ponto de gravação na tela, o primeiro toque do botão A só acorda a imagem. O toque seguinte, com a tela já ligada, liga ou desliga o **Monitor de sons perigosos**. O botão B só acorda a tela ou renova o prazo.
+
+| Entidade | Tipo | Valores / função |
+|---|---|---|
+| **Estado da tela** | sensor de texto | `ligada` ou `ponto de gravação` |
+| **Tela: apagar após** | número, em min, categoria configuração | Prazo até apagar; 0,5–60, padrão 5 |
+| **Acordar tela** | botão | Executa a mesma ação de acordar |
+
+No YAML a ação se chama `acordar_tela`. O Home Assistant publica `esphome.<nó>_acordar_tela`. O nome do firmware é `sticks3-monitor` com sufixo de MAC (`name_add_mac_suffix`). No aparelho de exemplo, MAC `70:04:1d:dc:4b:40`, a ação é `esphome.sticks3_monitor_dc4b40_acordar_tela`.
+
+O arquivo [`homeassistant/packages/sticks3_tela.yaml`](../homeassistant/packages/sticks3_tela.yaml) escuta o evento `monitor_perigo` e chama essa ação (modo `queued`, até 3). Assim a tela acorda em interfone, campainha, latido e nas outras categorias, inclusive quando a categoria se repete e o sensor `ultimo_perigo_detectado` permanece igual.
+
+Instalação do pacote (o bloco de `packages` é o mesmo da [seção de reações](manual-app-ha-os.md#2-configurar-as-reações-no-home-assistant)):
+
+1. No `configuration.yaml`, deixe os pacotes ativos:
+
+   ```yaml
+   homeassistant:
+     packages: !include_dir_named packages
+   ```
+
+2. Copie `sticks3_tela.yaml` para `/config/packages/`. Pode ficar junto de `monitor_perigo.yaml`.
+3. Se o seu StickS3 tiver outra MAC, abra o arquivo e troque `esphome.sticks3_monitor_dc4b40_acordar_tela` pela ação listada em **Ferramentas de desenvolvedor → Ações** (procure `acordar_tela`).
+4. **Verificar configuração** e **Reiniciar** em **Configurações → Ferramentas de desenvolvedor → YAML**.
+
+Estas três linhas no topo de `sticks3.yaml` mudam brilho e sensibilidade do salto; um valor novo pede recompilação e OTA:
+
+```yaml
+screen_on_brightness: 70%      # imagem ligada
+screen_dot_brightness: 25%     # ponto vermelho
+wake_jump_db: "15.0"           # dB acima do fundo que acorda a tela
+```
 
 ## Para ir além
 
