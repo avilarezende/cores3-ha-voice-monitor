@@ -29,6 +29,7 @@ flowchart LR
   HA Green/Yellow). O runtime do modelo não existe para ARM de 32 bits.
 - Cerca de 300 MB livres de RAM e 1 GB de disco para a imagem.
 - O CoreS3 com o firmware deste projeto (veja o outro manual). Sem ele, o app roda, mas não recebe áudio.
+- Para o sensor **Ouvintes ao vivo** e o link **Visitar** do StickS3, o app **Mosquitto broker**. A página **StickS3 ao vivo** funciona sem ele.
 
 ## 1. Instalar o app
 
@@ -61,8 +62,10 @@ flowchart LR
 |---|---|---|
 | Nível de log | `INFO` | `DEBUG` registra as 3 classes mais prováveis de cada janela analisada |
 | Máximo de clipes | `200` | Quantos WAVs de eventos guardar; os mais antigos são apagados |
+| MAC do dispositivo ao vivo (`live_device_mac`) | vazio | MAC do StickS3, por exemplo `70:04:1d:dc:4b:40`. Com o Mosquitto, cria o sensor **Ouvintes ao vivo** nesse dispositivo e o link **Visitar**. Vazio não cria o vínculo |
 
 Em **Rede**, dá para trocar a porta UDP do host (padrão 5050). Se mudar, ajuste `sound_monitor_port` no firmware.
+O áudio UDP é PCM 16 kHz/16 bit/mono, cerca de **32 kB/s**, sem codificação. A escuta ao vivo reencaminha esses mesmos bytes (seção [Escuta ao vivo](#escuta-ao-vivo)).
 
 ## 2. Configurar as reações no Home Assistant
 
@@ -150,6 +153,25 @@ para o clipe do evento mais recente.
 
 Os clipes são o melhor material para ajustar os limiares, e também para verificar alarmes falsos.
 
+## Escuta ao vivo
+
+A partir da versão **0.3.0** o app reencaminha o PCM que já chegou pela UDP 5050 para uma página HTTP no **ingress** do Home Assistant. A página usa a sessão do HA, inclusive pelo aplicativo e pelo túnel, e o app não abre porta nova no host. Só o proxy do ingress (172.30.32.2) é aceito. Sem ninguém ouvindo, o laço UDP só testa um booleano.
+
+O que a página faz:
+
+- Na barra lateral aparece o painel **StickS3 ao vivo**. O botão **Ouvir** toca no navegador com Web Audio, inclusive no app do HA e no iOS. O atraso fica em torno de 0,5 s.
+- O mesmo fluxo está em `stream.wav`, para o VLC ou outro player que aceite WAV contínuo.
+- O áudio sai como chegou do StickS3: 16 kHz, 16 bit, mono, cerca de **32 kB/s**, sem codificação.
+
+O vínculo com o dispositivo depende da opção `live_device_mac` e do **Mosquitto**:
+
+1. Instale e inicie o app **Mosquitto broker**. Sem ele a página do painel continua no ar; o sensor e o link Visitar não são criados.
+2. Na aba **Configuração** do Sound Monitor, preencha `live_device_mac` com a MAC do StickS3 (a mesma da integração ESPHome, no formato `70:04:1d:dc:4b:40`) e reinicie o app.
+3. O app publica, por MQTT discovery, o sensor **Ouvintes ao vivo** no dispositivo dessa MAC e grava a URL de configuração `homeassistant://app/<slug>`. Na página do dispositivo o link **Visitar** abre o painel **StickS3 ao vivo**.
+4. Quando a ESPHome reconecta, ela regrava o dispositivo. O app republica o link Visitar em seguida.
+
+MAC vazio desliga esse vínculo. O detector (limiares e votação) não muda por causa da escuta.
+
 ## 5. Ajustar a detecção
 
 Os parâmetros ficam em `config.toml`, que o app copia na primeira execução para a pasta de
@@ -157,13 +179,16 @@ configuração dele. No Studio Code Server ou no app Samba, a pasta aparece como
 `addon_configs/<id>_sound_monitor/` (em versões mais novas, `app_configs/…`).
 Depois de editar, **reinicie o app**.
 
-Além das categorias, o `config.toml` aceita três chaves globais (todas opcionais; o padrão do app 0.2.0 já as traz):
+Além das categorias, o `config.toml` aceita chaves globais opcionais. O padrão do app 0.2.0 já traz as três primeiras; `log_file`, `near_miss_clips` e `near_miss_clip_cooldown` entram na **0.2.1** (e seguem na 0.3.0):
 
 | Chave | Padrão | Efeito |
 |---|---|---|
 | `allowed_sources` | `[]` (qualquer IP) | Só classifica UDP vindo destes IPs. Um pacote de outra origem (por exemplo o roteador) é ignorado e logado uma vez |
 | `min_fresh_fraction` | `0.9` | Exige que esta fração da janela de 0,975 s tenha chegado nos últimos 1,5 s. Pacotes soltos deixam o buffer velho e não vão ao YAMNet |
-| `near_miss_fraction` | `0.0` (desligado) | Com log em `INFO`, quando uma categoria chega a esta fração do limiar o app registra as 5 classes mais prováveis. `DEBUG` continua mostrando toda janela |
+| `near_miss_fraction` | `0.0` (desligado) | Com log em `INFO`, quando uma categoria chega a esta fração do limiar o app registra as 5 classes mais prováveis e os milissegundos ativos da janela. A linha lista todas as categorias que chegaram perto. `DEBUG` continua mostrando toda janela |
+| `log_file` | `""` (desligado) | Log rotativo em disco (5 MB × 3 cópias), por exemplo `/media/sound-monitor/monitor.log`. A calibração sobrevive à janela curta de log do app |
+| `near_miss_clips` | `[]` | Nomes de categorias cujo quase-acerto também salva um WAV com prefixo `quase_` (por exemplo `quase_campainha_0.24`) |
+| `near_miss_clip_cooldown` | `10` | Segundos mínimos entre dois clipes de quase |
 
 Cada categoria pode, além dos parâmetros abaixo, vetar um acerto quando outro som domina — útil quando periquitos disparam a campainha. A janela deixa de contar se `veto >= veto_min` e `veto >= pontuação × veto_ratio`, a menos que algum rótulo em `strong_labels` passe de `strong_threshold` (um toque tonal claro ainda conta). Padrões: `veto_min` 0,15, `veto_ratio` 1,0, `strong_threshold` 1,1 (sem rótulos fortes, o veto não é anulado). Exemplo na categoria `campainha`, comentado no `config.toml` distribuído:
 
@@ -175,9 +200,9 @@ strong_labels = ["Ding-dong"]
 strong_threshold = 0.45
 ```
 
-Quem já tem um `config.toml` editado não recebe essas chaves sozinho (o app só copia o arquivo na primeira execução). Vale acrescentá-las à mão e reiniciar o app. A versão do app precisa ser **0.2.0** ou mais nova.
+Quem já tem um `config.toml` editado não recebe essas chaves sozinho (o app só copia o arquivo na primeira execução). Vale acrescentá-las à mão e reiniciar o app. As chaves de 0.2.0 pedem o app **0.2.0** ou mais novo; `log_file`, `near_miss_clips`, `near_miss_clip_cooldown` e `min_active_ms` pedem **0.2.1** ou mais novo.
 
-Cada categoria tem quatro parâmetros:
+Cada categoria tem estes parâmetros:
 
 | Parâmetro | Efeito | Se houver alarmes falsos | Se perder eventos reais |
 |---|---|---|---|
@@ -185,6 +210,7 @@ Cada categoria tem quatro parâmetros:
 | `window` / `min_hits` | dispara com `min_hits` acertos nas últimas `window` janelas de 0,5 s | aumentar `min_hits` | diminuir `min_hits` |
 | `cooldown_seconds` | intervalo mínimo entre dois eventos da mesma categoria | aumentar | diminuir |
 | `labels` | classes do AudioSet que contam para a categoria | remover a classe que confunde | acrescentar classe parecida |
+| `min_active_ms` | tempo mínimo de som ativo na janela, em ms (0 desliga). A energia é medida em blocos de 50 ms; conta o que fica a até `active_db` dB do pico (padrão 10). Bipes mais curtos deixam de ser acerto, salvo um rótulo em `strong_labels` acima de `strong_threshold` | aumentar, para ignorar bipes curtos | diminuir ou deixar em 0 |
 
 Os nomes válidos de `labels` estão no
 [mapa de classes do YAMNet](https://github.com/tensorflow/models/blob/master/research/audioset/yamnet/yamnet_class_map.csv).
@@ -217,8 +243,8 @@ os pontos em que um evento seria disparado com o `config.toml` atual.
 ## 6. Atualizar o app
 
 O Home Assistant só oferece atualização quando o campo `version` de `sound-monitor/config.yaml`
-muda no GitHub. A versão atual do app é **0.2.0**. Ao alterar o código do app, aumente a versão
-(por exemplo, `0.2.0` → `0.2.1`) e publique. A atualização aparece em **Configurações → Apps**.
+muda no GitHub. A versão atual do app é **0.3.0**. Ao alterar o código do app, aumente a versão
+(por exemplo, `0.3.0` → `0.3.1`) e publique. A atualização aparece em **Configurações → Apps**.
 O `config.toml` editado e os clipes são preservados.
 
 ## Solução de problemas
@@ -237,6 +263,8 @@ O `config.toml` editado e os clipes são preservados.
 | Log `Ignorando áudio de <IP>` | UDP de um aparelho fora de `allowed_sources` | Inclua o IP do CoreS3/StickS3 na lista, ou esvazie a lista para aceitar todos |
 | Campainha dispara com pássaros | YAMNet confunde canto com toque | `veto_labels` na categoria (seção 5); um toque forte continua valendo via `strong_labels` |
 | Alarme falso horas depois do último som real | Pacotes soltos preenchem um buffer antigo e o YAMNet pontua o resto | `allowed_sources` e `min_fresh_fraction` (seção 5); no 0.2.0 isso já vem ligado para fração 0,9 |
+| Painel StickS3 ao vivo não aparece | app anterior à 0.3.0, ou ingress desligado | Atualize o app; a aba Informações mostra o painel na barra lateral |
+| Sem sensor Ouvintes ao vivo nem link Visitar | Mosquitto parado, ou `live_device_mac` vazio/diferente da MAC do StickS3 | Instale o Mosquitto, preencha a MAC `aa:bb:cc:dd:ee:ff` e reinicie o app |
 
 ## Limitações
 

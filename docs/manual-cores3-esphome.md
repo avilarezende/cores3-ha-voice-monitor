@@ -4,7 +4,8 @@ Este manual cobre a parte do dispositivo: preparar o assistente de voz do Home A
 o firmware ESPHome, gravá-lo no **M5Stack CoreS3** (ESP32-S3) e conectá-lo ao Home Assistant.
 A parte do servidor (app Sound Monitor, reações e ajuste da detecção) está em
 [manual-app-ha-os.md](manual-app-ha-os.md). O firmware do **M5Stack StickS3**
-(só o monitor, sem Assist) está no [README](../README.md).
+(só o monitor, sem Assist) está no [README](../README.md). O ganho do microfone
+desse firmware (`mic_gain`, e o registrador 0x16 na auto-recuperação do ES8311) é **30 dB**.
 
 ## O que o firmware faz
 
@@ -204,7 +205,7 @@ Com o Home Assistant conectado, a tela mostra a casinha em repouso: o CoreS3 est
 
 ## Consumo de rede e recursos
 
-- **Rede:** cerca de 256 kbit/s constantes para o monitor (PCM 16 kHz, 16 bit, mono) e o mesmo
+- **Rede:** cerca de 32 kB/s (256 kbit/s) constantes para o monitor, PCM 16 kHz/16 bit/mono sem codificação, e o mesmo
   para o assistente de voz enquanto ele escuta. É pouco para uma rede doméstica, mas evite Wi-Fi no limite do alcance.
 - **CoreS3:** o firmware compilado usa 41% da RAM interna e 53% da flash. O buffer de áudio do
   monitor (16 KB) fica na PSRAM.
