@@ -9,6 +9,10 @@ substitutions:
   # dBFS: 0 = fundo de escala. Abaixo disto, por mic_silence_ms, o ES8311 é reinicializado.
   mic_silence_dbfs: "-90.0"
   mic_silence_ms: "180000"
+  # Tela: brilho com imagem / com o ponto vermelho de "gravando"; salto de nível que acorda a tela
+  screen_on_brightness: 70%
+  screen_dot_brightness: 25%
+  wake_jump_db: "15.0"
 
 esphome:
   name: ${name}
@@ -34,8 +38,10 @@ esphome:
             ESP_LOGI("sticks3", "M5PM1 configurado (LCD on, PA off)");
     - priority: 600
       then:
-        - light.turn_on: { id: backlight, brightness: 70% }
-        - component.update: lcd
+        - light.turn_on:
+            id: backlight
+            brightness: ${screen_on_brightness}
+        - script.execute: wake_screen
 
 esp32:
   variant: esp32s3
@@ -55,6 +61,11 @@ logger:
 api:
   encryption:
     key: !secret api_encryption_key
+  actions:
+    # HA: esphome.<nó>_acordar_tela (chamado pela automação de monitor_perigo)
+    - action: acordar_tela
+      then:
+        - script.execute: wake_screen
 
 ota:
   - platform: esphome
@@ -176,6 +187,11 @@ display:
     update_interval: 10s
     lambda: |-
       it.fill(Color::BLACK);
+      if (!id(screen_awake)) {
+        // Inativa: só um ponto vermelho piscando (1 s aceso / 1 s apagado), canto superior direito
+        if (id(dot_phase)) it.filled_circle(228, 11, 5, Color(220, 0, 0));
+        return;
+      }
       it.image(4, 4, id(calico_logo));
       auto ip = id(wifi_ip).state;
       it.printf(74, 6,  id(f_small), Color::WHITE, "StickS3 Monitor");
@@ -216,14 +232,22 @@ binary_sensor:
     id: key_a
     name: "Botão A"
     pin: { number: GPIO11, inverted: true, mode: { input: true } }
+    on_press:
+      - lambda: id(press_woke) = !id(screen_awake);
+      - script.execute: wake_screen
     on_click:
-      - switch.toggle: sound_monitor_switch
+      # Com a tela apagada, o primeiro toque só acorda; não liga/desliga o áudio.
+      - if:
+          condition:
+            lambda: return !id(press_woke);
+          then:
+            - switch.toggle: sound_monitor_switch
   - platform: gpio
     id: key_b
     name: "Botão B"
     pin: { number: GPIO12, inverted: true, mode: { input: true } }
-    on_click:
-      - component.update: lcd
+    on_press:
+      - script.execute: wake_screen
 
 text_sensor:
   - platform: wifi_info
@@ -233,7 +257,14 @@ text_sensor:
     id: ultimo_alerta
     entity_id: sensor.ultimo_perigo_detectado
     on_value:
-      - component.update: lcd
+      - script.execute: wake_screen
+  - platform: template
+    id: screen_state
+    name: "Estado da tela"
+    icon: "mdi:monitor"
+    lambda: |-
+      return {id(screen_awake) ? "ligada" : "ponto de gravação"};
+    update_interval: 60s
 
 button:
   - platform: restart
@@ -241,6 +272,26 @@ button:
     name: "Reiniciar"
     icon: "mdi:restart"
     entity_category: config
+  - platform: template
+    name: "Acordar tela"
+    icon: "mdi:monitor-eye"
+    on_press:
+      - script.execute: wake_screen
+
+number:
+  - platform: template
+    id: screen_timeout_min
+    name: "Tela: apagar após"
+    icon: "mdi:timer-outline"
+    entity_category: config
+    unit_of_measurement: min
+    min_value: 0.5
+    max_value: 60
+    step: 0.5
+    initial_value: 5
+    restore_value: true
+    optimistic: true
+    mode: box
 
 sensor:
   # 0 dB = fundo de escala (dBFS). Passivo: só mede enquanto o monitor captura.
@@ -256,8 +307,40 @@ sensor:
       accuracy_decimals: 1
       entity_category: diagnostic
       state_class: measurement
+      on_value:
+        # "Mudança" local: nível sobe wake_jump_db acima do fundo (média lenta só do ambiente calmo).
+        - lambda: |-
+            float v = x;
+            if (v != v) return;
+            float &floor_db = id(mic_floor_db);
+            if (floor_db != floor_db) floor_db = v;
+            if (v > floor_db + ${wake_jump_db}f) {
+              id(wake_screen).execute();
+            } else if (v < floor_db + 6.0f) {
+              floor_db += 0.02f * (v - floor_db);
+            }
 
 globals:
+  - id: screen_awake
+    type: bool
+    restore_value: false
+    initial_value: "true"
+  - id: screen_last_wake
+    type: uint32_t
+    restore_value: false
+    initial_value: "0"
+  - id: dot_phase
+    type: bool
+    restore_value: false
+    initial_value: "false"
+  - id: press_woke
+    type: bool
+    restore_value: false
+    initial_value: "false"
+  - id: mic_floor_db
+    type: float
+    restore_value: false
+    initial_value: "NAN"
   - id: mic_silent_since
     type: uint32_t
     restore_value: false
@@ -276,6 +359,22 @@ globals:
     initial_value: "true"
 
 script:
+  - id: wake_screen
+    mode: restart
+    then:
+      - lambda: id(screen_last_wake) = millis();
+      - if:
+          condition:
+            lambda: return !id(screen_awake);
+          then:
+            - lambda: |-
+                id(screen_awake) = true;
+                ESP_LOGI("sticks3", "Tela acordada");
+            - light.turn_on:
+                id: backlight
+                brightness: ${screen_on_brightness}
+            - text_sensor.template.publish: { id: screen_state, state: "ligada" }
+      - component.update: lcd
   # Sequência do M5Unified (_microphone_enabled_cb_sticks3) + ADC scale 30 dB (mic_gain).
   # 0x16 = 5 é o valor do enum ES8311 30DB. Não chama no setup: o codec ainda não tem clock.
   - id: apply_es8311_adc
@@ -311,6 +410,25 @@ script:
 # Se o nível fica abaixo de mic_silence_dbfs por vários minutos enquanto transmite,
 # regrava o ES8311 e reabre o microfone; se isso não recuperar, reinicia.
 interval:
+  - interval: 1s
+    then:
+      - if:
+          condition:
+            lambda: return id(screen_awake) && (millis() - id(screen_last_wake) >= (uint32_t) (id(screen_timeout_min).state * 60000.0f));
+          then:
+            - lambda: |-
+                id(screen_awake) = false;
+                ESP_LOGI("sticks3", "Tela inativa: ponto de gravação");
+            - light.turn_on:
+                id: backlight
+                brightness: ${screen_dot_brightness}
+            - text_sensor.template.publish: { id: screen_state, state: "ponto de gravação" }
+      - if:
+          condition:
+            lambda: return !id(screen_awake);
+          then:
+            - lambda: id(dot_phase) = !id(dot_phase);
+            - component.update: lcd
   - interval: 5s
     then:
       - if:

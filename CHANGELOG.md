@@ -1,5 +1,13 @@
 # Changelog
 
+## StickS3 — tela inativa (2026-10-20)
+
+- Após `Tela: apagar após` minutos sem atividade (padrão 5, ajustável no HA, 0,5–60), a imagem apaga e fica só um ponto vermelho piscando (1 s aceso/1 s apagado) com o backlight em 25%.
+- Acorda por mais um período com: botão A ou B (com a tela apagada, o primeiro toque de A só acorda, não liga/desliga o áudio), mudança de `sensor.ultimo_perigo_detectado`, salto de nível do microfone ≥ 15 dB acima do fundo (média lenta), botão **Acordar tela** ou a ação `esphome.<nó>_acordar_tela`.
+- Entidades novas: **Estado da tela** (`ligada` / `ponto de gravação`), **Tela: apagar após** (min), **Acordar tela**.
+- `homeassistant/packages/sticks3_tela.yaml`: automação que chama a ação a cada evento `monitor_perigo`.
+- Auto-recuperação do microfone e ganho de 30 dB inalterados.
+
 ## 0.3.0
 
 ### Sound Monitor
