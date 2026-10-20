@@ -5,5 +5,8 @@ configuration:
   max_clips:
     name: Max clips
     description: Number of event WAV clips kept in /media/sound-monitor; older ones are deleted.
+  live_device_mac:
+    name: Live device MAC
+    description: MAC of the StickS3 (for example 70:04:1d:dc:4b:40). With Mosquitto, adds the Live listeners sensor to that device and sets its Visit link to the StickS3 ao vivo panel. Leave empty to skip the device link.
 network:
   5050/udp: PCM audio from the CoreS3 (16 kHz, 16-bit, mono)

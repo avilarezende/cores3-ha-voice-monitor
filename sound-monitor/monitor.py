@@ -28,9 +28,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
-import numpy as np
-
 import live
+import numpy as np
 from ai_edge_litert.interpreter import Interpreter
 
 SAMPLE_RATE = 16000
