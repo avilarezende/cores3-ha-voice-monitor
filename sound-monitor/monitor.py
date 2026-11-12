@@ -84,6 +84,8 @@ class Settings:
     # Categorias cujos "quase" também salvam um WAV (prefixo quase_), no máx. 1 a cada N s.
     near_miss_clips: list[str] = field(default_factory=list)
     near_miss_clip_cooldown: float = 10.0
+    # Seção [live]: filtro só do ouvinte ao vivo (não afeta o detector).
+    live: dict = field(default_factory=dict)
 
 
 def load_settings(path: Path, class_names: list[str]) -> Settings:
@@ -128,6 +130,7 @@ def load_settings(path: Path, class_names: list[str]) -> Settings:
         log_file=raw.get("log_file", ""),
         near_miss_clips=raw.get("near_miss_clips", []),
         near_miss_clip_cooldown=raw.get("near_miss_clip_cooldown", 10.0),
+        live=raw.get("live", {}),
     )
 
 
@@ -364,7 +367,7 @@ def serve(args, model: YamNet, settings: Settings) -> None:
     log.info("Escutando PCM 16 kHz/16 bit/mono em UDP %d", args.port)
     log.info("Categorias: %s", ", ".join(c.name for c in settings.categories))
 
-    relay = live.LiveRelay()
+    relay = live.LiveRelay(settings.live)
     link = None
     if args.live_port:
         live.start_http(relay, args.live_port)

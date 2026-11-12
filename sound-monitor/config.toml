@@ -64,3 +64,21 @@ threshold = 0.40
 window = 1
 min_hits = 1
 cooldown_seconds = 30
+
+# 0.3.1: filtro SÓ do ouvinte ao vivo (painel "StickS3 ao vivo"); o detector recebe o áudio original.
+# Na página, a caixa "sem filtro" (ou ?raw=1 no stream) ouve o áudio cru para comparar.
+[live]
+filter = true             # false = desliga tudo (áudio cru, como na 0.3.0)
+highpass_hz = 120.0       # passa-alta: corta ronco/DC (0 desliga)
+lowpass_hz = 3800.0       # passa-baixa: corta chiado agudo (0 desliga)
+filter_order = 4          # Butterworth de 4ª ordem
+noise_gate = true         # atenua o chiado de fundo entre as falas
+gate_reduction_db = 10.0  # quanto atenuar o fundo
+gate_open_db = 8.0        # abre quando o som passa o piso de ruído + isto
+agc = true                # volume automático
+agc_target_dbfs = -20.0   # nível alvo da fala
+agc_max_gain_db = 40.0    # ganho máximo
+agc_min_gain_db = 0.0
+agc_attack_s = 0.05
+agc_release_s = 2.0
+limiter_dbfs = -1.0       # teto de pico (sem clipping)
